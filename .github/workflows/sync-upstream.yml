@@ -2,12 +2,7 @@ name: Sync mirror branch from upstream
 
 # Fast-forwards this fork's mirror branch (upstream's default branch) from upstream.
 # `work` is never touched. Upstream's own workflows are disabled afterwards, so mirror
-# pushes do not start the upstream CI matrix on this fork.
-#
-# Secret UPSTREAM_SYNC_TOKEN (optional but needed when upstream changes .github/workflows):
-# fine-grained PAT for this repository with Contents, Workflows, Actions: read and write.
-# Without it the job falls back to GITHUB_TOKEN, which GitHub refuses to use for pushes
-# that touch workflow files; the job then fails and GitHub emails the failure.
+# pushes do not start the upstream CI matrix on this fork. Uses only the default token.
 
 on:
   schedule:
@@ -23,7 +18,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  GH_TOKEN: ${{ secrets.UPSTREAM_SYNC_TOKEN || github.token }}
+  GH_TOKEN: ${{ github.token }}
   REPO: ${{ github.repository }}
   SELF: .github/workflows/sync-upstream.yml
 
