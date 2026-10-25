@@ -1,0 +1,62 @@
+name: Sync mirror branch from upstream
+
+# Fast-forwards this fork's mirror branch (upstream's default branch) from upstream.
+# `work` is never touched. Upstream's own workflows are disabled afterwards, so mirror
+# pushes do not start the upstream CI matrix on this fork.
+#
+# Secret UPSTREAM_SYNC_TOKEN (optional but needed when upstream changes .github/workflows):
+# fine-grained PAT for this repository with Contents, Workflows, Actions: read and write.
+# Without it the job falls back to GITHUB_TOKEN, which GitHub refuses to use for pushes
+# that touch workflow files; the job then fails and GitHub emails the failure.
+
+on:
+  schedule:
+    - cron: "23 */6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: write
+
+concurrency:
+  group: sync-upstream
+  cancel-in-progress: false
+
+env:
+  GH_TOKEN: ${{ secrets.UPSTREAM_SYNC_TOKEN || github.token }}
+  REPO: ${{ github.repository }}
+  SELF: .github/workflows/sync-upstream.yml
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Fast-forward the mirror branch
+        run: |
+          set -euo pipefail
+          read -r upstream mirror < <(gh api "repos/$REPO" --jq '[.parent.full_name, .parent.default_branch] | @tsv')
+          # ahead = upstream-only commits, behind = commits only this fork has
+          read -r ahead behind < <(gh api "repos/$REPO/compare/$mirror...${upstream%%/*}:$mirror" --jq '"\(.ahead_by) \(.behind_by)"')
+          if [ "$behind" -gt 0 ]; then
+            echo "::error::$mirror has $behind commit(s) not in $upstream (diverged); not synced"
+            exit 1
+          fi
+          if [ "$ahead" -eq 0 ]; then
+            echo "$mirror is up to date with $upstream"
+          else
+            gh api -X POST "repos/$REPO/merge-upstream" -f branch="$mirror" --jq '.message'
+            echo "$mirror fast-forwarded by $ahead commit(s) from $upstream"
+          fi
+
+      - name: Keep upstream CI off this fork
+        run: |
+          set -euo pipefail
+          for status in queued in_progress; do
+            for id in $(gh api --paginate "repos/$REPO/actions/runs?status=$status" --jq ".workflow_runs[] | select(.path | startswith(\"$SELF\") | not) | .id"); do
+              gh api -X POST "repos/$REPO/actions/runs/$id/cancel" >/dev/null || true
+            done
+          done
+          for id in $(gh api --paginate "repos/$REPO/actions/workflows" --jq ".workflows[] | select(.state == \"active\" and .path != \"$SELF\") | .id"); do
+            gh api -X PUT "repos/$REPO/actions/workflows/$id/disable"
+          done
